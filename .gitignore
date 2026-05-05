@@ -18,6 +18,9 @@ env/
 # Local Claude Code settings
 .claude/settings.local.json
 
+# Local prompts / private build notes
+prompt.txt
+
 # Extraction outputs and temporary work directories
 **/.work/
 outputs/
