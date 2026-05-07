@@ -32,6 +32,21 @@ def test_parse_latex_figures_in_order_with_captions_and_graphics() -> None:
     assert figures[1].caption == "Second real caption with"
 
 
+def test_parse_latex_figures_expands_includegraphics_macros() -> None:
+    text = r"""
+    \newcommand{\fig}[1]{\includegraphics[width=.5\textwidth]{figs/#1}}
+    \begin{figure}
+      \fig{plot-a}\\
+      \fig{plot-b.pdf}
+      \caption{Macro-backed figure.}
+    \end{figure}
+    """
+
+    figures = parse_latex_figures(text, "main.tex")
+
+    assert figures[0].graphics == ["figs/plot-a", "figs/plot-b.pdf"]
+
+
 def test_latex_parser_does_not_create_figures_without_figure_environment() -> None:
     text = r"\includegraphics{loose-image}\caption{Loose caption}"
 
@@ -88,6 +103,35 @@ def test_latex_input_files_are_expanded_for_main_document(tmp_path) -> None:
     assert len(records) == 1
     assert records[0].fig_id == "Fig01"
     assert records[0].caption == "Included figure caption."
+    assert records[0].source_image is not None
+    assert "section.tex" in records[0].provenance[0].details["expanded_inputs"]
+
+
+def test_latex_records_handle_relative_source_dir_with_expanded_inputs(tmp_path, monkeypatch) -> None:
+    _write_png(tmp_path / "included.png")
+    (tmp_path / "main.tex").write_text(
+        r"""
+        \documentclass{article}
+        \begin{document}
+        \input{section}
+        \end{document}
+        """,
+        encoding="utf-8",
+    )
+    (tmp_path / "section.tex").write_text(
+        r"""
+        \begin{figure}
+          \includegraphics{included}
+          \caption{Included figure caption.}
+        \end{figure}
+        """,
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path.parent)
+
+    records = figure_records_from_latex(Path(tmp_path.name), Path(tmp_path.name) / "main.tex")
+
+    assert len(records) == 1
     assert records[0].source_image is not None
     assert "section.tex" in records[0].provenance[0].details["expanded_inputs"]
 

@@ -21,6 +21,10 @@ class LatexFigure:
 
 
 _INCLUDE_RE = re.compile(r"\\includegraphics(?:\s*\[[^\]]*\])?\s*\{([^{}]+)\}", re.DOTALL)
+_NEWCOMMAND_GRAPHIC_RE = re.compile(
+    r"\\(?:re)?newcommand\s*\{\\([A-Za-z@]+)\}\s*(?:\[\s*1\s*\])\s*\{\\includegraphics(?:\s*\[[^\]]*\])?\s*\{([^{}]*#1[^{}]*)\}\}",
+    re.DOTALL,
+)
 _ENV_RE = re.compile(r"\\begin\{(figure\*?)\}([\s\S]*?)\\end\{\1\}", re.MULTILINE)
 _CAPTIONOF_ENV_RE = re.compile(r"\\begin\{(table\*?)\}([\s\S]*?)\\end\{\1\}", re.MULTILINE)
 _PANEL_REF_RE = re.compile(r"\(([a-z])\)", re.IGNORECASE)
@@ -31,17 +35,18 @@ _GRAPHICSPATH_ENTRY_RE = re.compile(r"\{([^{}]+)\}")
 
 def parse_latex_figures(tex_text: str, tex_file: str = "main.tex") -> list[LatexFigure]:
     text = _strip_comments(tex_text)
+    includegraphics_macros = _includegraphics_macros(text)
     matches: list[tuple[int, str, str, str | None, list[str]]] = []
     for match in _ENV_RE.finditer(text):
         body = match.group(2)
-        matches.append((match.start(), match.group(1), body, _extract_caption(body), _graphics(body)))
+        matches.append((match.start(), match.group(1), body, _extract_caption(body), _graphics(body, includegraphics_macros)))
     for match in _CAPTIONOF_ENV_RE.finditer(text):
         environment = match.group(1)
         if environment in {"figure", "figure*"}:
             continue
         body = match.group(2)
         caption = _extract_captionof_figure(body)
-        graphics = _graphics(body)
+        graphics = _graphics(body, includegraphics_macros)
         if caption is None or not graphics:
             continue
         matches.append((match.start(), environment, body, caption, graphics))
@@ -63,7 +68,7 @@ def parse_latex_figures(tex_text: str, tex_file: str = "main.tex") -> list[Latex
 
 def figure_records_from_latex(source_dir: Path, tex_file: Path) -> list[FigureRecord]:
     text, included_files = expand_latex_inputs(tex_file)
-    parsed = parse_latex_figures(text, str(tex_file.relative_to(source_dir)))
+    parsed = parse_latex_figures(text, _relative_to_source(tex_file, source_dir))
     search_dirs = _latex_search_dirs(source_dir, tex_file, included_files, text)
     records: list[FigureRecord] = []
     for parsed_figure in parsed:
@@ -81,8 +86,8 @@ def figure_records_from_latex(source_dir: Path, tex_file: Path) -> list[FigureRe
                 "includegraphics": parsed_figure.graphics,
                 "resolved_images": [str(path) if path else None for path in resolved],
                 "start_offset": parsed_figure.start_offset,
-                "expanded_inputs": [str(path.relative_to(source_dir)) if _is_relative_to(path, source_dir) else str(path) for path in included_files],
-                "graphicspath": [str(path.relative_to(source_dir)) if _is_relative_to(path, source_dir) else str(path) for path in search_dirs if path != source_dir],
+                "expanded_inputs": [_relative_to_source(path, source_dir) for path in included_files],
+                "graphicspath": [_relative_to_source(path, source_dir) for path in search_dirs if path.resolve() != source_dir.resolve()],
                 "composite_strategy": "source_order_vertical_stack" if composite_image else None,
             },
         )
@@ -144,8 +149,22 @@ def _is_relative_to(path: Path, root: Path) -> bool:
         return False
 
 
-def _graphics(body: str) -> list[str]:
-    return [item.strip() for item in _INCLUDE_RE.findall(body) if item.strip()]
+def _relative_to_source(path: Path, source_dir: Path) -> str:
+    try:
+        return str(path.resolve().relative_to(source_dir.resolve()))
+    except ValueError:
+        return str(path)
+
+
+def _includegraphics_macros(text: str) -> dict[str, str]:
+    return {match.group(1): match.group(2).strip() for match in _NEWCOMMAND_GRAPHIC_RE.finditer(text)}
+
+
+def _graphics(body: str, includegraphics_macros: dict[str, str] | None = None) -> list[str]:
+    expanded = body
+    for name, template in (includegraphics_macros or {}).items():
+        expanded = re.sub(rf"\\{re.escape(name)}\s*\{{([^{{}}]+)\}}", lambda match: f"\\includegraphics{{{template.replace('#1', match.group(1).strip())}}}", expanded)
+    return [item.strip() for item in _INCLUDE_RE.findall(expanded) if item.strip()]
 
 
 def _panels_from_graphics(
